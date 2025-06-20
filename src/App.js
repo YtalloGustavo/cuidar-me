@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, Pill, CheckCircle, Circle, X, Pencil, RotateCw, LayoutDashboard, Calendar, MessageSquare, LogOut, User, Lock } from 'lucide-react';
+import { Plus, Trash2, Pill, CheckCircle, Circle, X, Pencil, RotateCw, LayoutDashboard, Calendar, MessageSquare, LogOut, User, Lock, Phone } from 'lucide-react';
 
 import { 
     initializeApp 
@@ -19,6 +19,8 @@ import {
     doc, 
     deleteDoc, 
     updateDoc,
+    setDoc,
+    getDoc,
     Timestamp,
     arrayUnion,
     arrayRemove
@@ -35,13 +37,18 @@ const firebaseConfig = {
 };
 const appId = 'default-med-tracker';
 
-// --- Lógica de Frequência ---
+// --- Funções Utilitárias e Lógica ---
 const isSameDay = (d1, d2) => d1 && d2 && d1.getFullYear() === d2.getFullYear() && d1.getMonth() === d2.getMonth() && d1.getDate() === d2.getDate();
 const getDayWithoutTime = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
 const wasDueOnDate = (med, date) => {
-    const { frequencyType, frequencyValue, createdAt } = med;
+    const { frequencyType, frequencyValue, createdAt, takenDoses } = med;
     const checkDate = getDayWithoutTime(date);
-    if (!createdAt || checkDate < getDayWithoutTime(createdAt.toDate())) return false;
+
+    if (!createdAt || checkDate < getDayWithoutTime(createdAt.toDate())) {
+        return false;
+    }
+
     switch (frequencyType) {
         case 'daily': return true;
         case 'weekly': return checkDate.getDay() === parseInt(frequencyValue, 10);
@@ -50,13 +57,54 @@ const wasDueOnDate = (med, date) => {
             if (!frequencyValue) return false;
             const interval = parseInt(frequencyValue, 10);
             const startDate = getDayWithoutTime(createdAt.toDate());
-            const diffTime = Math.abs(checkDate.getTime() - startDate.getTime());
-            const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-            return diffDays % interval === 0;
+
+            const today = getDayWithoutTime(new Date());
+            if (isSameDay(checkDate, today)) {
+                const lastTakenDate = takenDoses.length > 0
+                    ? getDayWithoutTime(new Date(Math.max(...takenDoses.map(d => d.date.toDate().getTime()))))
+                    : null;
+                if (!lastTakenDate) return isSameDay(checkDate, startDate);
+                
+                const nextDueDate = new Date(lastTakenDate);
+                nextDueDate.setDate(lastTakenDate.getDate() + interval);
+                return checkDate >= nextDueDate;
+            } else {
+                const diffTime = Math.abs(checkDate.getTime() - startDate.getTime());
+                const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+                return diffDays % interval === 0;
+            }
         }
         default: return true;
     }
 };
+
+// --- Componente Raiz ---
+export default function App() {
+    const [user, setUser] = useState(null);
+    const [auth, setAuth] = useState(null);
+    const [db, setDb] = useState(null);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        const app = initializeApp(firebaseConfig);
+        const firebaseAuth = getAuth(app);
+        const firestoreDb = getFirestore(app);
+        setAuth(firebaseAuth);
+        setDb(firestoreDb);
+        
+        const unsubscribe = onAuthStateChanged(firebaseAuth, (currentUser) => {
+            setUser(currentUser);
+            setLoading(false);
+        });
+        return () => unsubscribe();
+    }, []);
+
+    if (loading) {
+        return <div className="bg-gray-900 min-h-screen flex items-center justify-center text-white">Carregando...</div>;
+    }
+
+    return user ? <MainApp user={user} db={db} auth={auth} /> : <AuthComponent auth={auth} />;
+}
 
 // --- Componente de Autenticação ---
 const AuthComponent = ({ auth }) => {
@@ -156,6 +204,23 @@ const MainApp = ({ user, db, auth }) => {
         setShowNoteModal(false);
     };
 
+    const renderFrequencyInputs = () => {
+        switch (frequencyType) {
+            case 'weekly': return (<div><label className="block text-sm text-gray-300 mb-1">Dia da Semana</label><select value={frequencyValue} onChange={e => setFrequencyValue(e.target.value)} className="w-full bg-gray-700 border-gray-600 rounded-lg px-3 py-2"><option value="">Selecione...</option><option value="0">Domingo</option><option value="1">Segunda</option><option value="2">Terça</option><option value="3">Quarta</option><option value="4">Quinta</option><option value="5">Sexta</option><option value="6">Sábado</option></select></div>);
+            case 'monthly': return (<div><label className="block text-sm text-gray-300 mb-1">Dia do Mês (1-31)</label><input type="number" min="1" max="31" value={frequencyValue} onChange={e => setFrequencyValue(e.target.value)} className="w-full bg-gray-700 border-gray-600 rounded-lg px-3 py-2"/></div>);
+            case 'interval': return (<div><label className="block text-sm text-gray-300 mb-1">A cada (dias)</label><input type="number" min="1" value={frequencyValue} onChange={e => setFrequencyValue(e.target.value)} className="w-full bg-gray-700 border-gray-600 rounded-lg px-3 py-2"/></div>);
+            default: return null;
+        }
+    };
+    
+    const renderContent = () => {
+        switch (activeView) {
+            case 'history': return <HistoryView medications={medications} />;
+            case 'profile': return <ProfileView user={user} db={db} />;
+            default: return <DashboardView />;
+        }
+    };
+
     const DashboardView = () => {
         const today = new Date();
         const medsDue = medications.filter(med => wasDueOnDate(med, today) && !med.takenDoses.some(d=>isSameDay(d.date.toDate(), today))).sort((a,b) => a.time.localeCompare(b.time));
@@ -241,52 +306,49 @@ const MainApp = ({ user, db, auth }) => {
         );
     };
 
-    const renderFrequencyInputs = () => {
-        switch (frequencyType) {
-            case 'weekly': return (<div><label className="block text-sm text-gray-300 mb-1">Dia da Semana</label><select value={frequencyValue} onChange={e => setFrequencyValue(e.target.value)} className="w-full bg-gray-700 border-gray-600 rounded-lg px-3 py-2"><option value="">Selecione...</option><option value="0">Domingo</option><option value="1">Segunda</option><option value="2">Terça</option><option value="3">Quarta</option><option value="4">Quinta</option><option value="5">Sexta</option><option value="6">Sábado</option></select></div>);
-            case 'monthly': return (<div><label className="block text-sm text-gray-300 mb-1">Dia do Mês (1-31)</label><input type="number" min="1" max="31" value={frequencyValue} onChange={e => setFrequencyValue(e.target.value)} className="w-full bg-gray-700 border-gray-600 rounded-lg px-3 py-2"/></div>);
-            case 'interval': return (<div><label className="block text-sm text-gray-300 mb-1">A cada (dias)</label><input type="number" min="1" value={frequencyValue} onChange={e => setFrequencyValue(e.target.value)} className="w-full bg-gray-700 border-gray-600 rounded-lg px-3 py-2"/></div>);
-            default: return null;
-        }
+    const ProfileView = ({ user, db }) => {
+        const [phoneNumber, setPhoneNumber] = useState('');
+        const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+        const [statusMessage, setStatusMessage] = useState('');
+        const profileDocRef = doc(db, `artifacts/${appId}/users/${user.uid}/profile/settings`);
+    
+        useEffect(() => {
+            const fetchProfile = async () => {
+                const docSnap = await getDoc(profileDocRef);
+                if (docSnap.exists()) {
+                    setPhoneNumber(docSnap.data().phoneNumber || '');
+                    setNotificationsEnabled(docSnap.data().notificationsEnabled !== false);
+                }
+            };
+            fetchProfile();
+        }, []);
+    
+        const handleSaveProfile = async (e) => {
+            e.preventDefault();
+            setStatusMessage('Salvando...');
+            try {
+                await setDoc(profileDocRef, { phoneNumber, notificationsEnabled }, { merge: true });
+                setStatusMessage('Perfil salvo com sucesso!');
+            } catch (error) {
+                setStatusMessage('Erro ao salvar o perfil.');
+            }
+            setTimeout(() => setStatusMessage(''), 3000);
+        };
+    
+        return (
+            <div className="p-4"><h2 className="text-2xl font-bold text-cyan-400 mb-6">Configurações de Lembretes</h2><form onSubmit={handleSaveProfile} className="space-y-6"><div><label htmlFor="phone" className="block text-sm font-medium text-gray-300 mb-2">Número do WhatsApp</label><div className="relative"><Phone className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={20}/><input type="tel" id="phone" value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} className="w-full bg-gray-800 rounded-lg pl-10 pr-3 py-2 border border-gray-700 focus:outline-none focus:ring-2 focus:ring-cyan-500" placeholder="Ex: 5581999998888"/></div><p className="text-xs text-gray-500 mt-1">Inclua o código do país (55 para Brasil) e o DDD.</p></div><div className="flex items-center justify-between bg-gray-800 p-4 rounded-lg border border-gray-700"><label htmlFor="notifications" className="font-medium text-gray-300">Ativar notificações</label><div onClick={() => setNotificationsEnabled(!notificationsEnabled)} className={`w-14 h-8 flex items-center rounded-full p-1 cursor-pointer transition-colors ${notificationsEnabled ? 'bg-cyan-500' : 'bg-gray-600'}`}><div className={`bg-white w-6 h-6 rounded-full shadow-md transform transition-transform ${notificationsEnabled ? 'translate-x-6' : ''}`}></div></div></div><button type="submit" className="w-full py-3 bg-cyan-500 hover:bg-cyan-600 rounded-lg font-bold transition-colors">Salvar Configurações</button>{statusMessage && <p className="text-center text-sm text-green-400 mt-4">{statusMessage}</p>}</form></div>
+        );
     };
 
     return (
         <div className="bg-gray-900 text-white font-sans w-full min-h-screen flex justify-center">
              <div className="w-full max-w-md mx-auto p-4 pb-28">
-                <header className="text-center my-6 relative"><h1 className="text-3xl font-bold text-cyan-400">Painel de Remédios</h1><p className="text-gray-400 text-sm mt-2">{activeView === 'dashboard' ? 'Seu controle diário' : 'Histórico de Doses'}</p><button onClick={handleLogout} className="absolute top-0 right-0 p-2 text-gray-400 hover:text-red-400" title="Sair"><LogOut size={20} /></button></header>
-                <main>{activeView === 'dashboard' ? <DashboardView /> : <HistoryView />}</main>
+                <header className="text-center my-6 relative"><h1 className="text-3xl font-bold text-cyan-400">Painel de Remédios</h1><p className="text-gray-400 text-sm mt-2">{activeView === 'dashboard' ? 'Seu controle diário' : activeView === 'history' ? 'Histórico de Doses' : 'Meu Perfil'}</p><button onClick={handleLogout} className="absolute top-0 right-0 p-2 text-gray-400 hover:text-red-400" title="Sair"><LogOut size={20} /></button></header>
+                <main>{renderContent()}</main>
                 {showMedModal && (<div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50 overflow-y-auto"><div className="bg-gray-800 rounded-xl p-6 w-full max-w-sm my-8"><h3 className="text-xl font-bold mb-4">{editingMed ? 'Editar Remédio' : 'Novo Remédio'}</h3><form onSubmit={handleSubmitMedForm} className="space-y-4"><div><label className="block text-sm">Nome*</label><input type="text" value={medName} onChange={e => setMedName(e.target.value)} className="w-full bg-gray-700 rounded px-3 py-2" required /></div><div><label className="block text-sm">Dosagem</label><input type="text" value={medDosage} onChange={e => setMedDosage(e.target.value)} className="w-full bg-gray-700 rounded px-3 py-2" /></div><div><label className="block text-sm">Horário*</label><input type="time" value={medTime} onChange={e => setMedTime(e.target.value)} className="w-full bg-gray-700 rounded px-3 py-2" required /></div><div><label className="block text-sm">Frequência</label><select value={frequencyType} onChange={e => {setFrequencyType(e.target.value); setFrequencyValue('');}} className="w-full bg-gray-700 rounded px-3 py-2"><option value="daily">Diário</option><option value="weekly">Semanal</option><option value="monthly">Mensal</option><option value="interval">Intervalo de dias</option></select></div>{renderFrequencyInputs()}<div className="flex justify-end pt-4 space-x-3"><button type="button" onClick={() => setShowMedModal(false)} className="py-2 px-4 bg-gray-600 rounded">Cancelar</button><button type="submit" className="py-2 px-4 bg-cyan-500 rounded">{editingMed ? 'Salvar' : 'Adicionar'}</button></div></form></div></div>)}
                 {showNoteModal && (<div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50"><div className="bg-gray-800 rounded-xl p-6 w-full max-w-sm"><h3 className="text-xl font-bold mb-4">Adicionar Anotação</h3><form onSubmit={handleSaveNote}><textarea value={currentNote} onChange={e => setCurrentNote(e.target.value)} className="w-full h-24 bg-gray-700 rounded px-3 py-2" placeholder="Ex: Senti dor de cabeça..."></textarea><div className="flex justify-end pt-4 space-x-3"><button type="button" onClick={() => setShowNoteModal(false)} className="py-2 px-4 bg-gray-600 rounded">Cancelar</button><button type="submit" className="py-2 px-4 bg-cyan-500 rounded">Salvar Nota</button></div></form></div></div>)}
-                <footer className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-gray-800/80 backdrop-blur-sm border-t border-gray-700"><nav className="flex justify-around p-2"><button onClick={() => setActiveView('dashboard')} className={`flex flex-col items-center p-2 rounded-lg ${activeView === 'dashboard' ? 'text-cyan-400' : 'text-gray-400'}`}><LayoutDashboard size={24} /><span className="text-xs mt-1">Painel</span></button><button onClick={() => setActiveView('history')} className={`flex flex-col items-center p-2 rounded-lg ${activeView === 'history' ? 'text-cyan-400' : 'text-gray-400'}`}><Calendar size={24} /><span className="text-xs mt-1">Histórico</span></button></nav></footer>
+                <footer className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-gray-800/80 backdrop-blur-sm border-t border-gray-700"><nav className="flex justify-around p-2"><button onClick={() => setActiveView('dashboard')} className={`flex flex-col items-center p-2 rounded-lg w-1/3 ${activeView === 'dashboard' ? 'text-cyan-400' : 'text-gray-400'}`}><LayoutDashboard size={24} /><span className="text-xs mt-1">Painel</span></button><button onClick={() => setActiveView('history')} className={`flex flex-col items-center p-2 rounded-lg w-1/3 ${activeView === 'history' ? 'text-cyan-400' : 'text-gray-400'}`}><Calendar size={24} /><span className="text-xs mt-1">Histórico</span></button><button onClick={() => setActiveView('profile')} className={`flex flex-col items-center p-2 rounded-lg w-1/3 ${activeView === 'profile' ? 'text-cyan-400' : 'text-gray-400'}`}><User size={24} /><span className="text-xs mt-1">Perfil</span></button></nav></footer>
             </div>
         </div>
     );
 };
-
-// --- Componente Raiz ---
-export default function App() {
-    const [user, setUser] = useState(null);
-    const [auth, setAuth] = useState(null);
-    const [db, setDb] = useState(null);
-    const [loading, setLoading] = useState(true);
-
-    useEffect(() => {
-        const app = initializeApp(firebaseConfig);
-        const firebaseAuth = getAuth(app);
-        const firestoreDb = getFirestore(app);
-        setAuth(firebaseAuth);
-        setDb(firestoreDb);
-        
-        const unsubscribe = onAuthStateChanged(firebaseAuth, (currentUser) => {
-            setUser(currentUser);
-            setLoading(false);
-        });
-        return () => unsubscribe();
-    }, []);
-
-    if (loading) {
-        return <div className="bg-gray-900 min-h-screen flex items-center justify-center text-white">Carregando...</div>;
-    }
-
-    return user ? <MainApp user={user} db={db} auth={auth} /> : <AuthComponent auth={auth} />;
-}
