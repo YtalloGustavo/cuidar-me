@@ -1,13 +1,13 @@
 {
   "files": {
-    "main.css": "/cuidar-me/static/css/main.4a5ea713.css",
-    "main.js": "/cuidar-me/static/js/main.86d844a7.js",
+    "main.css": "/cuidar-me/static/css/main.713fec31.css",
+    "main.js": "/cuidar-me/static/js/main.125d66ae.js",
     "index.html": "/cuidar-me/index.html",
-    "main.4a5ea713.css.map": "/cuidar-me/static/css/main.4a5ea713.css.map",
-    "main.86d844a7.js.map": "/cuidar-me/static/js/main.86d844a7.js.map"
+    "main.713fec31.css.map": "/cuidar-me/static/css/main.713fec31.css.map",
+    "main.125d66ae.js.map": "/cuidar-me/static/js/main.125d66ae.js.map"
   },
   "entrypoints": [
-    "static/css/main.4a5ea713.css",
-    "static/js/main.86d844a7.js"
+    "static/css/main.713fec31.css",
+    "static/js/main.125d66ae.js"
   ]
 }
